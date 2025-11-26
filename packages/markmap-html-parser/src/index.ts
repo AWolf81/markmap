@@ -269,6 +269,9 @@ export function convertNode(htmlRoot: IHtmlNode) {
       } else if (htmlNode.comments.includes('fold')) {
         node.payload = { ...node.payload, fold: 1 };
       }
+      if (htmlNode.comments.includes('flip')) {
+        node.payload = { ...node.payload, flip: true };
+      }
     }
     return node;
   });

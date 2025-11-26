@@ -98,17 +98,39 @@ export class Transformer implements ITransformer {
   getAssets(keys?: string[]): IAssets {
     const styles: CSSItem[] = [];
     const scripts: JSItem[] = [];
+    const viewHooks: IAssets['viewHooks'] = {};
     keys ??= this.plugins.map((plugin) => plugin.name);
     for (const assets of keys.map((key) => this.assetsMap[key])) {
       if (assets) {
         if (assets.styles) styles.push(...assets.styles);
         if (assets.scripts) scripts.push(...assets.scripts);
+        if (assets.viewHooks) {
+          // Merge view hooks from all plugins
+          viewHooks.beforeLayout =
+            assets.viewHooks.beforeLayout ?? viewHooks.beforeLayout;
+          viewHooks.afterLayout =
+            assets.viewHooks.afterLayout ?? viewHooks.afterLayout;
+          viewHooks.renderLink =
+            assets.viewHooks.renderLink ?? viewHooks.renderLink;
+        }
       }
     }
-    return {
+
+    const result: IAssets = {
       styles: styles.map((item) => this.resolveCSS(item)),
       scripts: scripts.map((item) => this.resolveJS(item)),
     };
+
+    // Only include viewHooks if there are actual hooks defined
+    if (
+      viewHooks.beforeLayout ||
+      viewHooks.afterLayout ||
+      viewHooks.renderLink
+    ) {
+      result.viewHooks = viewHooks;
+    }
+
+    return result;
   }
 
   /**

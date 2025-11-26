@@ -1,3 +1,4 @@
+import pluginAlternateDirection from './alternate-direction';
 import pluginCheckbox from './checkbox';
 import pluginFrontmatter from './frontmatter';
 import pluginHljs from './hljs';
@@ -8,6 +9,7 @@ import pluginSourceLines from './source-lines';
 export * from './base';
 
 export {
+  pluginAlternateDirection,
   pluginCheckbox,
   pluginFrontmatter,
   pluginHljs,
@@ -23,4 +25,5 @@ export const plugins = [
   pluginNpmUrl,
   pluginCheckbox,
   pluginSourceLines,
+  pluginAlternateDirection,
 ];

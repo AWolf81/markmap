@@ -11,6 +11,7 @@ test('plugins', () => {
     'npmUrl',
     'checkbox',
     'sourceLines',
+    'alternateDirection',
   ]);
   const assets = transformer.getAssets();
   expect(assets).toMatchSnapshot();

@@ -430,6 +430,11 @@ exports[`custom url provider 1`] = `
       "type": "stylesheet",
     },
   ],
+  "viewHooks": {
+    "afterLayout": [Function],
+    "beforeLayout": [Function],
+    "renderLink": undefined,
+  },
 }
 `;
 
@@ -602,6 +607,11 @@ exports[`plugins 1`] = `
       "type": "stylesheet",
     },
   ],
+  "viewHooks": {
+    "afterLayout": [Function],
+    "beforeLayout": [Function],
+    "renderLink": undefined,
+  },
 }
 `;
 

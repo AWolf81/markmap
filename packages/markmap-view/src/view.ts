@@ -27,6 +27,7 @@ import {
   IMarkmapOptions,
   IMarkmapState,
   IPadding,
+  IViewHooks,
 } from './types';
 import { childSelector, simpleHash } from './util';
 
@@ -64,6 +65,8 @@ export class Markmap {
   g: d3.Selection<SVGGElement, INode, HTMLElement, INode>;
 
   zoom: d3.ZoomBehavior<SVGElement, INode>;
+
+  hooks: IViewHooks = {};
 
   private _observer: ResizeObserver;
 
@@ -139,7 +142,32 @@ export class Markmap {
     this.svg.call(this.zoom.transform, newTransform);
   };
 
-  async toggleNode(data: INode, recursive = false) {
+  async toggleNode(data: INode, recursive = false, side?: 'left' | 'right') {
+    // Bilateral root special handling
+    if (side && data.payload?.hasBilateralLayout) {
+      const foldKey = side === 'left' ? 'leftFolded' : 'rightFolded';
+      const newFold = (data.payload[foldKey] as number) ? 0 : 1;
+
+      if (recursive) {
+        // Fold all children on this side recursively
+        const allChildren = data.payload._allChildren as INode[] | undefined;
+        allChildren?.forEach((child) => {
+          const isLeft = child.payload?.direction === 'left';
+          if (isLeft === (side === 'left')) {
+            walkTree(child, (item, next) => {
+              item.payload = { ...item.payload, fold: newFold };
+              next();
+            });
+          }
+        });
+      }
+
+      data.payload = { ...data.payload, [foldKey]: newFold };
+      await this.renderData(data);
+      return;
+    }
+
+    // Default behavior for normal nodes
     const fold = data.payload?.fold ? 0 : 1;
     if (recursive) {
       // recursively
@@ -159,9 +187,25 @@ export class Markmap {
     await this.renderData(data);
   }
 
-  handleClick = (e: MouseEvent, d: INode) => {
+  handleClick = (
+    e: MouseEvent,
+    d: INode | { node: INode; side: 'left' | 'right' | 'default' },
+  ) => {
     let recursive = this.options.toggleRecursively;
     if (isMacintosh ? e.metaKey : e.ctrlKey) recursive = !recursive;
+
+    // Handle bilateral circle clicks
+    if (typeof d === 'object' && 'node' in d) {
+      const { node, side } = d;
+      if (side === 'left' || side === 'right') {
+        this.toggleNode(node, recursive, side);
+        return;
+      }
+      this.toggleNode(node, recursive);
+      return;
+    }
+
+    // Default behavior for regular nodes
     this.toggleNode(d, recursive);
   };
 
@@ -215,6 +259,9 @@ export class Markmap {
   private _relayout() {
     if (!this.state.data) return;
 
+    // Note: beforeLayout hook is now called in renderData() before walkTree
+    // to allow plugins to filter children before collecting nodes
+
     this.g
       .selectAll<SVGGElement, INode>(childSelector<SVGGElement>(SELECTOR_NODE))
       .selectAll<SVGForeignObjectElement, INode>(
@@ -230,7 +277,8 @@ export class Markmap {
       this.options;
     const layout = flextree<INode>({})
       .children((d) => {
-        if (!d.payload?.fold) return d.children;
+        if (d.payload?.fold) return undefined;
+        return d.children;
       })
       .nodeSize((node) => {
         const [width, height] = node.data.state.size;
@@ -242,39 +290,109 @@ export class Markmap {
           lineWidth(a.data)
         );
       });
-    const tree = layout.hierarchy(this.state.data);
-    layout(tree);
-    const fnodes = tree.descendants();
-    fnodes.forEach((fnode) => {
-      const node = fnode.data;
-      node.state.rect = {
-        x: fnode.y,
-        y: fnode.x - fnode.xSize / 2,
-        width: fnode.ySize - spacingHorizontal,
-        height: fnode.xSize,
+
+    const applyLayout = (rootNode: INode, excludeRoot = false): INode[] => {
+      const tree = layout.hierarchy(rootNode);
+      layout(tree);
+      const descendants = tree.descendants();
+      descendants.forEach((fnode) => {
+        const node = fnode.data;
+        node.state.rect = {
+          x: fnode.y,
+          y: fnode.x - fnode.xSize / 2,
+          width: fnode.ySize - spacingHorizontal,
+          height: fnode.xSize,
+        };
+      });
+      const mapped = descendants.map((d) => d.data);
+      return excludeRoot ? mapped.filter((n) => n !== rootNode) : mapped;
+    };
+
+    let fnodes: INode[] = [];
+    const rootNode = this.state.data;
+    if (rootNode?.payload?.hasBilateralLayout && rootNode.children) {
+      const leftChildren = rootNode.children.filter(
+        (c) => c.payload?.direction === 'left',
+      );
+      const rightChildren = rootNode.children.filter(
+        (c) => c.payload?.direction !== 'left',
+      );
+
+      if (leftChildren.length) {
+        const leftRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: leftChildren,
+        };
+        fnodes.push(...applyLayout(leftRoot, true));
+      }
+      if (rightChildren.length) {
+        const rightRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: rightChildren,
+        };
+        fnodes.push(...applyLayout(rightRoot, true));
+      }
+
+      // Set root rect independently based on its content only
+      const [rootW, rootH] = rootNode.state.size;
+      rootNode.state.rect = {
+        x: 0,
+        y: -rootH / 2,
+        width: rootW + (rootW ? paddingX * 2 : 0),
+        height: rootH,
       };
-    });
+      fnodes.push(rootNode);
+    } else {
+      const tree = layout.hierarchy(this.state.data);
+      layout(tree);
+      const d = tree.descendants();
+      d.forEach((fnode) => {
+        const node = fnode.data;
+        node.state.rect = {
+          x: fnode.y,
+          y: fnode.x - fnode.xSize / 2,
+          width: fnode.ySize - spacingHorizontal,
+          height: fnode.xSize,
+        };
+      });
+      fnodes = d.map((f) => f.data);
+    }
+
+    // Call afterLayout hook for plugins
+    this.hooks.afterLayout?.(fnodes, this.options);
+
     this.state.rect = {
-      x1: min(fnodes, (fnode) => fnode.data.state.rect.x) || 0,
-      y1: min(fnodes, (fnode) => fnode.data.state.rect.y) || 0,
+      x1: min(fnodes, (fnode) => fnode.state.rect.x) || 0,
+      y1: min(fnodes, (fnode) => fnode.state.rect.y) || 0,
       x2:
-        max(
-          fnodes,
-          (fnode) => fnode.data.state.rect.x + fnode.data.state.rect.width,
-        ) || 0,
+        max(fnodes, (fnode) => fnode.state.rect.x + fnode.state.rect.width) ||
+        0,
       y2:
-        max(
-          fnodes,
-          (fnode) => fnode.data.state.rect.y + fnode.data.state.rect.height,
-        ) || 0,
+        max(fnodes, (fnode) => fnode.state.rect.y + fnode.state.rect.height) ||
+        0,
     };
   }
 
+  /**
+   * Register hooks for plugins to control layout and rendering.
+   */
+  registerHooks(hooks: IViewHooks): void {
+    this.hooks = { ...this.hooks, ...hooks };
+  }
+
   setOptions(opts?: Partial<IMarkmapOptions>): void {
-    this.options = {
+    const hasAlternateLayout =
+      opts &&
+      Object.prototype.hasOwnProperty.call(opts as any, 'alternateLayout');
+    const next: any = {
       ...this.options,
       ...opts,
     };
+    // Drop stale plugin-specific options (e.g., alternateLayout) when not provided
+    if (!hasAlternateLayout) delete next.alternateLayout;
+    this.options = next;
     if (this.options.zoom) {
       this.svg.call(this.zoom);
     } else {
@@ -289,7 +407,9 @@ export class Markmap {
 
   async setData(data?: IPureNode | null, opts?: Partial<IMarkmapOptions>) {
     if (opts) this.setOptions(opts);
-    if (data) this.state.data = this._initializeData(data);
+    if (data) {
+      this.state.data = this._initializeData(data);
+    }
     if (!this.state.data) return;
     this.updateStyle();
     await this.renderData();
@@ -319,11 +439,16 @@ export class Markmap {
     const rootNode = this.state.data;
     if (!rootNode) return;
 
+    // Call beforeLayout hook BEFORE collecting nodes
+    // This allows plugins to filter children before walkTree runs
+    this.hooks.beforeLayout?.(rootNode, this.options);
+
     const nodeMap: Record<number, INode> = {};
     const parentMap: Record<number, number> = {};
     const nodes: INode[] = [];
     walkTree(rootNode, (item, next, parent) => {
       if (!item.payload?.fold) next();
+
       nodeMap[item.state.id] = item;
       if (parent) parentMap[item.state.id] = parent.state.id;
       nodes.push(item);
@@ -405,14 +530,33 @@ export class Markmap {
     const mmLineMerge = mmLine.merge(mmLineEnter);
 
     // Circle to link to children of the node
+    // For bilateral layout, we need TWO circles (left and right)
+    type CircleData = { node: INode; side: 'left' | 'right' | 'default' };
     const mmCircle = mmGMerge
       .selectAll<
         SVGCircleElement,
-        INode
+        CircleData
       >(childSelector<SVGCircleElement>('circle'))
       .data(
-        (d) => (d.children?.length ? [d] : []),
-        (d) => d.state.key,
+        (d): CircleData[] => {
+          // Special case: bilateral root gets two circles regardless of current visible children
+          if (d.payload?.hasBilateralLayout) {
+            const circles: CircleData[] = [];
+            if ((d.payload.leftChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'left' });
+            }
+            if ((d.payload.rightChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'right' });
+            }
+            return circles;
+          }
+
+          if (!d.children?.length) return [];
+
+          // Normal nodes get one circle
+          return [{ node: d, side: 'default' }];
+        },
+        (d) => `${d.node.state.key}-${d.side}`,
       );
     const mmCircleEnter = mmCircle
       .enter()
@@ -423,12 +567,25 @@ export class Markmap {
       .on('mousedown', stopPropagation);
     const mmCircleMerge = mmCircleEnter
       .merge(mmCircle)
-      .attr('stroke', (d) => color(d))
-      .attr('fill', (d) =>
-        d.payload?.fold && d.children
-          ? color(d)
-          : 'var(--markmap-circle-open-bg)',
-      );
+      .attr('stroke', (d) => color(d.node))
+      .attr('fill', (d) => {
+        const node = d.node;
+        // For bilateral layout, check the appropriate fold state
+        if (d.side === 'left') {
+          return ((node.payload?.leftFolded as number) ?? 0)
+            ? color(node)
+            : 'var(--markmap-circle-open-bg)';
+        }
+        if (d.side === 'right') {
+          return ((node.payload?.rightFolded as number) ?? 0)
+            ? color(node)
+            : 'var(--markmap-circle-open-bg)';
+        }
+        // Default behavior
+        return node.payload?.fold && node.children
+          ? color(node)
+          : 'var(--markmap-circle-open-bg)';
+      });
 
     const observer = this._observer;
     const mmFo = mmGMerge
@@ -437,7 +594,8 @@ export class Markmap {
         INode
       >(childSelector<SVGForeignObjectElement>('foreignObject'))
       .data(
-        (d) => [d],
+        // Don't render foreignObject for branch nodes (they have no content to display)
+        (d) => (d.payload?.isBranchNode ? [] : [d]),
         (d) => d.state.key,
       );
     const mmFoEnter = mmFo
@@ -554,13 +712,21 @@ export class Markmap {
       .attr('stroke', (d) => color(d))
       .attr('stroke-width', lineWidth);
 
-    const mmCircleExit = mmGExit.selectAll<SVGCircleElement, INode>(
+    const mmCircleExit = mmGExit.selectAll<SVGCircleElement, CircleData>(
       childSelector<SVGCircleElement>('circle'),
     );
     this.transition(mmCircleExit).attr('r', 0).attr('stroke-width', 0);
     mmCircleMerge
-      .attr('cx', (d) => d.state.rect.width)
-      .attr('cy', (d) => d.state.rect.height + lineWidth(d) / 2);
+      // Place circles on the edge that connects to the parent
+      // For bilateral root: left circle on left edge, right circle on right edge
+      // For normal nodes: left branch uses left edge, right branch uses right edge
+      .attr('cx', (d) => {
+        if (d.side === 'left') return 0;
+        if (d.side === 'right') return d.node.state.rect.width;
+        // Default behavior: place on appropriate edge based on position
+        return d.node.state.rect.x < 0 ? 0 : d.node.state.rect.width;
+      })
+      .attr('cy', (d) => d.node.state.rect.height + lineWidth(d.node) / 2);
     this.transition(mmCircleMerge).attr('r', 6).attr('stroke-width', '1.5');
 
     this.transition(mmFoExit).style('opacity', 0);
@@ -587,18 +753,75 @@ export class Markmap {
       .attr('d', (d) => {
         const origSource = d.source;
         const origTarget = d.target;
-        const source: [number, number] = [
-          origSource.state.rect.x + origSource.state.rect.width,
-          origSource.state.rect.y +
-            origSource.state.rect.height +
-            lineWidth(origSource) / 2,
-        ];
-        const target: [number, number] = [
-          origTarget.state.rect.x,
-          origTarget.state.rect.y +
-            origTarget.state.rect.height +
-            lineWidth(origTarget) / 2,
-        ];
+
+        // Call renderLink hook for plugins
+        const customLink = this.hooks.renderLink?.(
+          origSource,
+          origTarget,
+          this.options,
+        );
+        if (customLink) return customLink;
+
+        // Check if nodes are on the left side (negative x after flipping)
+        const sourceOnLeft = origSource.state.rect.x < 0;
+        const targetOnLeft = origTarget.state.rect.x < 0;
+
+        // Link rendering
+        let source: [number, number];
+        let target: [number, number];
+
+        if (targetOnLeft && sourceOnLeft) {
+          // Both on left side: children extend leftward from parent
+          // Parent's collapse circle is on left edge, child extends further left
+          // Connect: parent left edge (circle) → child right edge
+          // Example: Charlie (x=-100, left edge at -100) → Charlie Child 2 (x=-300, right edge at -200)
+          source = [
+            origSource.state.rect.x, // Parent's left edge (collapse circle is here)
+            origSource.state.rect.y +
+              origSource.state.rect.height +
+              lineWidth(origSource) / 2,
+          ];
+          target = [
+            origTarget.state.rect.x + origTarget.state.rect.width, // Child's right edge
+            origTarget.state.rect.y +
+              origTarget.state.rect.height +
+              lineWidth(origTarget) / 2,
+          ];
+        } else if (targetOnLeft && !sourceOnLeft) {
+          // Source on right, target on left: connection from root to flipped branch
+          // Root's left edge connects to left-side child's right edge
+          // Connect: root left edge → flipped child right edge
+          source = [
+            origSource.state.rect.x, // Root's left edge
+            origSource.state.rect.y +
+              origSource.state.rect.height +
+              lineWidth(origSource) / 2,
+          ];
+          target = [
+            origTarget.state.rect.x + origTarget.state.rect.width, // Flipped child's right edge
+            origTarget.state.rect.y +
+              origTarget.state.rect.height +
+              lineWidth(origTarget) / 2,
+          ];
+        } else {
+          // Both on right side (default): children extend rightward from parent
+          // Parent's collapse circle is on right edge, child extends further right
+          // Connect: parent right edge (circle) → child left edge
+          // Example: Alice (x=100, right edge at 200) → Alice Child 1 (x=300, left edge at 300)
+          source = [
+            origSource.state.rect.x + origSource.state.rect.width, // Parent's right edge (collapse circle is here)
+            origSource.state.rect.y +
+              origSource.state.rect.height +
+              lineWidth(origSource) / 2,
+          ];
+          target = [
+            origTarget.state.rect.x, // Child's left edge
+            origTarget.state.rect.y +
+              origTarget.state.rect.height +
+              lineWidth(origTarget) / 2,
+          ];
+        }
+
         return linkShape({ source, target });
       });
 

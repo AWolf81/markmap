@@ -66,3 +66,31 @@ export interface IPadding {
 }
 
 export type ID3SVGElement = d3.Selection<SVGElement, INode, HTMLElement, INode>;
+
+/**
+ * Hook interface for plugins to control layout and rendering behavior.
+ * Plugins can register these hooks to modify how nodes are positioned and connected.
+ */
+export interface IViewHooks {
+  /**
+   * Called before layout calculation.
+   * Plugins can modify node data or prepare for layout.
+   */
+  beforeLayout?: (data: INode, options: IMarkmapOptions) => void;
+
+  /**
+   * Called after layout calculation but before rendering.
+   * Plugins can adjust node positions (e.g., flip coordinates for alternate layouts).
+   */
+  afterLayout?: (nodes: INode[], options: IMarkmapOptions) => void;
+
+  /**
+   * Called when rendering links between nodes.
+   * Return a custom SVG path string to override default link rendering, or null to use default.
+   */
+  renderLink?: (
+    source: INode,
+    target: INode,
+    options: IMarkmapOptions,
+  ) => string | null;
+}
