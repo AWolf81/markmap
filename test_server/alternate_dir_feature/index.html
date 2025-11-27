@@ -205,8 +205,12 @@
           mm.registerHooks(assets.viewHooks);
         }
 
-        mm.fit();
-        loadingEl.style.display = 'none';
+        // Wait for animation to complete before fitting
+        // Animation duration is set in baseOptions.duration
+        setTimeout(() => {
+          mm.fit();
+          loadingEl.style.display = 'none';
+        }, options.duration + 50);
       }
 
       document.getElementById('fit').addEventListener('click', () => mm && mm.fit());
