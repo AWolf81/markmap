@@ -1,0 +1,224 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Markmap Alternate Direction Feature</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        display: flex;
+        height: 100vh;
+        overflow: hidden;
+      }
+      #panel {
+        width: 300px;
+        padding: 16px;
+        border-right: 1px solid #ddd;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: #f9f9f9;
+      }
+      #panel h1 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+      }
+      select, button {
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+        background: white;
+      }
+      button:hover {
+        background: #f0f0f0;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+      }
+      #view {
+        flex: 1;
+        position: relative;
+      }
+      #view svg {
+        width: 100%;
+        height: 100%;
+      }
+      .markmap-dark {
+        background: #1a1a1a;
+        color: #fff;
+      }
+      .markmap-dark #panel {
+        background: #2a2a2a;
+        border-right-color: #444;
+      }
+      .markmap-dark select,
+      .markmap-dark button {
+        background: #333;
+        border-color: #555;
+        color: #fff;
+      }
+      .markmap-dark button:hover {
+        background: #404040;
+      }
+      .markmap-dark .markmap {
+        --markmap-code-bg: #1a1b26;
+        --markmap-code-color: #ddd;
+        --markmap-circle-open-bg: #444;
+        --markmap-text-color: #eee;
+      }
+      .markmap-foreign svg {
+        width: 16px !important;
+        height: 16px !important;
+        vertical-align: text-bottom;
+        margin-bottom: 2px;
+      }
+      #loading {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 16px;
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <h1>Markmap Examples</h1>
+      <label>
+        Example:
+        <select id="example"></select>
+      </label>
+      <div class="controls">
+        <button id="fit">Fit View</button>
+      </div>
+      <label>
+        <input id="dark-toggle" type="checkbox" />
+        Dark mode
+      </label>
+    </div>
+    <div id="view">
+      <div id="loading">Loading...</div>
+      <svg id="markmap"></svg>
+    </div>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.js"></script>
+    <script src="/packages/markmap-lib/dist/browser/index.iife.js"></script>
+    <script src="/packages/markmap-view/dist/browser/index.js"></script>
+    <script type="module">
+      import { examples } from './examples.js';
+
+      const { Transformer, Markmap, deriveOptions, loadCSS, loadJS, defaultColorFn } = window.markmap;
+      const svg = document.getElementById('markmap');
+      const exampleSelect = document.getElementById('example');
+      const loadingEl = document.getElementById('loading');
+      let mm;
+      let transformer = new Transformer();
+
+      // Populate dropdown
+      Object.entries(examples).forEach(([key, config]) => {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = config.title;
+        exampleSelect.appendChild(option);
+      });
+
+      // Listen to retransform hook from plugins
+      transformer.hooks.retransform.tap(() => {
+        console.log('🔄 Retransform triggered by plugin');
+        render();
+      });
+
+      async function loadMarkdown(filename) {
+        const response = await fetch(filename);
+        return await response.text();
+      }
+
+      async function applyAssets(assets) {
+        const loaders = [];
+        if (assets?.styles?.length) loaders.push(loadCSS(assets.styles));
+        if (assets?.scripts?.length) loaders.push(loadJS(assets.scripts, { defer: true }));
+        if (loaders.length) await Promise.all(loaders);
+      }
+
+      async function render() {
+        const selectedExample = examples[exampleSelect.value];
+        if (!selectedExample) return;
+
+        loadingEl.style.display = 'block';
+
+        const md = await loadMarkdown(selectedExample.file);
+        const { root, frontmatter } = transformer.transform(md);
+        const assets = transformer.getAssets();
+
+        const baseOptions = {
+          paddingX: 12,
+          spacingVertical: 8,
+          spacingHorizontal: 100,
+          duration: 500,
+          zoom: true,
+          pan: true,
+        };
+
+        const derived = typeof deriveOptions === 'function'
+          ? deriveOptions(frontmatter?.markmap || {})
+          : {};
+
+        const options = {
+          ...baseOptions,
+          ...(frontmatter?.markmap || {}),
+          ...derived,
+        };
+
+        // Reset options that should not persist
+        if (!frontmatter?.markmap?.colorFreezeLevel && !frontmatter?.markmap?.color) {
+          delete options.colorFreezeLevel;
+          if (!derived.color && defaultColorFn) {
+            options.color = (node) => defaultColorFn(`${node.state?.path || ''}`);
+          }
+        }
+        if (!frontmatter?.markmap?.alternateLayout) {
+          delete options.alternateLayout;
+        }
+
+        await applyAssets(assets);
+
+        if (!mm) {
+          mm = Markmap.create(svg, options, root);
+        } else {
+          mm.setData(root, options);
+        }
+
+        if (assets.viewHooks) {
+          mm.registerHooks(assets.viewHooks);
+        }
+
+        mm.fit();
+        loadingEl.style.display = 'none';
+      }
+
+      document.getElementById('fit').addEventListener('click', () => mm && mm.fit());
+
+      document.getElementById('dark-toggle').addEventListener('change', (e) => {
+        document.documentElement.classList.toggle('markmap-dark', e.target.checked);
+      });
+
+      exampleSelect.addEventListener('change', render);
+
+      // Load first example on page load
+      window.addEventListener('DOMContentLoaded', render);
+    </script>
+  </body>
+</html>
