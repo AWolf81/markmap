@@ -272,6 +272,16 @@ export function convertNode(htmlRoot: IHtmlNode) {
       if (htmlNode.comments.includes('flip')) {
         node.payload = { ...node.payload, flip: true };
       }
+      // Check for direction comment (e.g., "direction=left", "direction=top-right")
+      const directionComment = htmlNode.comments.find((c) =>
+        c.startsWith('direction='),
+      );
+      if (directionComment) {
+        const direction = directionComment.split('=')[1]?.trim();
+        if (direction) {
+          node.payload = { ...node.payload, direction };
+        }
+      }
     }
     return node;
   });

@@ -8,6 +8,7 @@ import {
   zoom,
   zoomIdentity,
   zoomTransform,
+  interpolateString,
 } from 'd3';
 import { flextree } from 'd3-flextree';
 import {
@@ -71,6 +72,12 @@ export class Markmap {
   private _observer: ResizeObserver;
 
   private _disposeList: (() => void)[] = [];
+
+  private _rootPaddingX = 0;
+
+  private _rootPaddingY = 0;
+
+  private _rootContentHeight = 0;
 
   constructor(
     svg: string | SVGElement | ID3SVGElement,
@@ -142,18 +149,39 @@ export class Markmap {
     this.svg.call(this.zoom.transform, newTransform);
   };
 
-  async toggleNode(data: INode, recursive = false, side?: 'left' | 'right') {
-    // Bilateral root special handling
-    if (side && data.payload?.hasBilateralLayout) {
-      const foldKey = side === 'left' ? 'leftFolded' : 'rightFolded';
+  async toggleNode(
+    data: INode,
+    recursive = false,
+    side?:
+      | 'left'
+      | 'right'
+      | 'top-left'
+      | 'top-right'
+      | 'bottom-left'
+      | 'bottom-right',
+  ) {
+    // Multi-directional root special handling
+    if (
+      side &&
+      (data.payload?.hasMultiDirectionalLayout ||
+        data.payload?.hasBilateralLayout)
+    ) {
+      const foldKeyMap: Record<string, string> = {
+        left: 'leftFolded',
+        right: 'rightFolded',
+        'top-left': 'topLeftFolded',
+        'top-right': 'topRightFolded',
+        'bottom-left': 'bottomLeftFolded',
+        'bottom-right': 'bottomRightFolded',
+      };
+      const foldKey = foldKeyMap[side];
       const newFold = (data.payload[foldKey] as number) ? 0 : 1;
 
       if (recursive) {
         // Fold all children on this side recursively
         const allChildren = data.payload._allChildren as INode[] | undefined;
         allChildren?.forEach((child) => {
-          const isLeft = child.payload?.direction === 'left';
-          if (isLeft === (side === 'left')) {
+          if (child.payload?.direction === side) {
             walkTree(child, (item, next) => {
               item.payload = { ...item.payload, fold: newFold };
               next();
@@ -189,15 +217,27 @@ export class Markmap {
 
   handleClick = (
     e: MouseEvent,
-    d: INode | { node: INode; side: 'left' | 'right' | 'default' },
+    d:
+      | INode
+      | {
+          node: INode;
+          side:
+            | 'left'
+            | 'right'
+            | 'top-left'
+            | 'top-right'
+            | 'bottom-left'
+            | 'bottom-right'
+            | 'default';
+        },
   ) => {
     let recursive = this.options.toggleRecursively;
     if (isMacintosh ? e.metaKey : e.ctrlKey) recursive = !recursive;
 
-    // Handle bilateral circle clicks
+    // Handle multi-directional circle clicks
     if (typeof d === 'object' && 'node' in d) {
       const { node, side } = d;
-      if (side === 'left' || side === 'right') {
+      if (side !== 'default') {
         this.toggleNode(node, recursive, side);
         return;
       }
@@ -207,6 +247,119 @@ export class Markmap {
 
     // Default behavior for regular nodes
     this.toggleNode(d, recursive);
+  };
+
+  private isRootFullyFolded(root: INode): boolean {
+    if (
+      root.payload?.hasMultiDirectionalLayout ||
+      root.payload?.hasBilateralLayout
+    ) {
+      const dirKeys: Record<string, keyof typeof root.payload> = {
+        left: 'leftFolded',
+        right: 'rightFolded',
+        'top-left': 'topLeftFolded',
+        'top-right': 'topRightFolded',
+        'bottom-left': 'bottomLeftFolded',
+        'bottom-right': 'bottomRightFolded',
+      };
+      const directions = (root.children || []).map(
+        (c) => c.payload?.direction || 'right',
+      );
+      if (!directions.length) return true;
+      return directions.every((dir) => !!(root.payload?.[dirKeys[dir]] as any));
+    }
+    return !!root.payload?.fold;
+  }
+
+  private shouldShowMasterToggle(root: INode): boolean {
+    if (
+      !(
+        root.payload?.hasMultiDirectionalLayout ||
+        root.payload?.hasBilateralLayout
+      )
+    ) {
+      return false;
+    }
+    const dirKeys: Array<
+      | 'leftChildrenCount'
+      | 'rightChildrenCount'
+      | 'topLeftChildrenCount'
+      | 'topRightChildrenCount'
+      | 'bottomLeftChildrenCount'
+      | 'bottomRightChildrenCount'
+    > = [
+      'leftChildrenCount',
+      'rightChildrenCount',
+      'topLeftChildrenCount',
+      'topRightChildrenCount',
+      'bottomLeftChildrenCount',
+      'bottomRightChildrenCount',
+    ];
+    const dirCount = dirKeys.reduce((count, key) => {
+      const has = (root.payload?.[key] as number) > 0;
+      return has ? count + 1 : count;
+    }, 0);
+    // Fallback: count unique directions on the full child list if counts are missing
+    const allChildren =
+      (root.payload?._allChildren as INode[] | undefined) ||
+      root.children ||
+      [];
+    const childDirCount =
+      dirCount ||
+      new Set(
+        allChildren.map((c) => c.payload?.direction || 'right').filter(Boolean),
+      ).size;
+    return childDirCount > 1;
+  }
+
+  private handleMasterToggle = (e: MouseEvent, root: INode) => {
+    let recursive = this.options.toggleRecursively;
+    if (isMacintosh ? e.metaKey : e.ctrlKey) recursive = !recursive;
+
+    const targetFold = this.isRootFullyFolded(root) ? 0 : 1;
+
+    if (
+      root.payload?.hasMultiDirectionalLayout ||
+      root.payload?.hasBilateralLayout
+    ) {
+      const dirKeys: Record<string, keyof typeof root.payload> = {
+        left: 'leftFolded',
+        right: 'rightFolded',
+        'top-left': 'topLeftFolded',
+        'top-right': 'topRightFolded',
+        'bottom-left': 'bottomLeftFolded',
+        'bottom-right': 'bottomRightFolded',
+      };
+      const allChildren =
+        (root.payload?._allChildren as INode[] | undefined) ||
+        root.children ||
+        [];
+      const directions = allChildren.map(
+        (c) => c.payload?.direction || 'right',
+      );
+      const payload = { ...root.payload };
+      directions.forEach((dir) => {
+        const key = dirKeys[dir];
+        payload[key] = targetFold;
+      });
+      root.payload = payload;
+
+      if (recursive) {
+        allChildren.forEach((child) => {
+          walkTree(child, (item, next) => {
+            item.payload = { ...item.payload, fold: targetFold };
+            next();
+          });
+        });
+      }
+    } else {
+      walkTree(root, (item, next) => {
+        item.payload = { ...item.payload, fold: targetFold };
+        next();
+      });
+    }
+
+    this.renderData(root);
   };
 
   private _initializeData(node: IPureNode | INode) {
@@ -310,7 +463,107 @@ export class Markmap {
 
     let fnodes: INode[] = [];
     const rootNode = this.state.data;
-    if (rootNode?.payload?.hasBilateralLayout && rootNode.children) {
+    const rootHasMulti = !!rootNode?.payload?.hasMultiDirectionalLayout;
+    const rootHasBilateral = !!rootNode?.payload?.hasBilateralLayout;
+
+    // Compute and store root padding for this render
+    const rootPaddingX =
+      rootHasMulti || rootHasBilateral ? Math.max(12, paddingX * 0.8) : 0;
+    const rootPaddingY = rootHasMulti || rootHasBilateral ? 10 : 0;
+    this._rootPaddingX = rootPaddingX;
+    this._rootPaddingY = rootPaddingY;
+    this._rootContentHeight = (rootNode?.state?.size?.[1] as number) || 0;
+    this._rootContentHeight = (rootNode?.state?.size?.[1] as number) || 0;
+
+    if (rootNode?.payload?.hasMultiDirectionalLayout && rootNode.children) {
+      // Split children into 6 groups based on direction
+      const leftChildren = rootNode.children.filter(
+        (c) => c.payload?.direction === 'left',
+      );
+      const rightChildren = rootNode.children.filter(
+        (c) =>
+          c.payload?.direction === 'right' ||
+          (!c.payload?.direction && c.payload?.direction !== 'left'),
+      );
+      const topLeftChildren = rootNode.children.filter(
+        (c) => c.payload?.direction === 'top-left',
+      );
+      const topRightChildren = rootNode.children.filter(
+        (c) => c.payload?.direction === 'top-right',
+      );
+      const bottomLeftChildren = rootNode.children.filter(
+        (c) => c.payload?.direction === 'bottom-left',
+      );
+      const bottomRightChildren = rootNode.children.filter(
+        (c) => c.payload?.direction === 'bottom-right',
+      );
+
+      // Apply horizontal layout for left and right
+      if (leftChildren.length) {
+        const leftRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: leftChildren,
+        };
+        fnodes.push(...applyLayout(leftRoot, true));
+      }
+      if (rightChildren.length) {
+        const rightRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: rightChildren,
+        };
+        fnodes.push(...applyLayout(rightRoot, true));
+      }
+
+      // Apply layout for vertical directions (they will be transformed in afterLayout hook)
+      if (topLeftChildren.length) {
+        const topLeftRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: topLeftChildren,
+        };
+        fnodes.push(...applyLayout(topLeftRoot, true));
+      }
+      if (topRightChildren.length) {
+        const topRightRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: topRightChildren,
+        };
+        fnodes.push(...applyLayout(topRightRoot, true));
+      }
+      if (bottomLeftChildren.length) {
+        const bottomLeftRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: bottomLeftChildren,
+        };
+        fnodes.push(...applyLayout(bottomLeftRoot, true));
+      }
+      if (bottomRightChildren.length) {
+        const bottomRightRoot = {
+          ...rootNode,
+          state: { ...rootNode.state },
+          children: bottomRightChildren,
+        };
+        fnodes.push(...applyLayout(bottomRightRoot, true));
+      }
+
+      // Set root rect independently based on its content only
+      const [rootW, rootH] = rootNode.state.size;
+      const rootWidth = rootW + (rootW ? paddingX * 2 : 0) + rootPaddingX * 2;
+      // Add padding above and below for top border and circles
+      const rootHeight = rootH + rootPaddingY * 2;
+      rootNode.state.rect = {
+        x: -rootWidth / 2,
+        y: -rootHeight / 2,
+        width: rootWidth,
+        height: rootHeight,
+      };
+      fnodes.push(rootNode);
+    } else if (rootNode?.payload?.hasBilateralLayout && rootNode.children) {
+      // Backwards compatibility for bilateral layout
       const leftChildren = rootNode.children.filter(
         (c) => c.payload?.direction === 'left',
       );
@@ -337,11 +590,14 @@ export class Markmap {
 
       // Set root rect independently based on its content only
       const [rootW, rootH] = rootNode.state.size;
+      const rootWidth = rootW + (rootW ? paddingX * 2 : 0) + rootPaddingX * 2;
+      // Add padding above and below for top border and circles
+      const rootHeight = rootH + rootPaddingY * 2;
       rootNode.state.rect = {
-        x: 0,
-        y: -rootH / 2,
-        width: rootW + (rootW ? paddingX * 2 : 0),
-        height: rootH,
+        x: -rootWidth / 2,
+        y: -rootHeight / 2,
+        width: rootWidth,
+        height: rootHeight,
       };
       fnodes.push(rootNode);
     } else {
@@ -351,10 +607,17 @@ export class Markmap {
       d.forEach((fnode) => {
         const node = fnode.data;
         node.state.rect = {
-          x: fnode.y,
-          y: fnode.x - fnode.xSize / 2,
-          width: fnode.ySize - spacingHorizontal,
-          height: fnode.xSize,
+          x:
+            fnode.y +
+            (node === rootNode && (rootHasMulti || rootHasBilateral)
+              ? -rootPaddingX
+              : 0),
+          y: fnode.x - fnode.xSize / 2 - (node === rootNode ? rootPaddingY : 0),
+          width:
+            fnode.ySize -
+            spacingHorizontal +
+            (node === rootNode ? rootPaddingX * 2 : 0),
+          height: fnode.xSize + (node === rootNode ? rootPaddingY * 2 : 0),
         };
       });
       fnodes = d.map((f) => f.data);
@@ -380,6 +643,27 @@ export class Markmap {
    */
   registerHooks(hooks: IViewHooks): void {
     this.hooks = { ...this.hooks, ...hooks };
+  }
+
+  private _getBaselineY(node: INode): number {
+    const { lineWidth } = this.options;
+    const contentHeight =
+      (node.state.size?.[1] as number) || node.state.rect.height;
+    const isRoot = node.state.depth === 1;
+    const isPaddedRoot =
+      isRoot &&
+      (node.payload?.hasMultiDirectionalLayout ||
+        node.payload?.hasBilateralLayout);
+
+    // Only the root needs extra clearance for the multiple toggle circles.
+    if (isRoot) {
+      const paddingBelow = isPaddedRoot ? this._rootPaddingY / 2 : 0;
+      const gap = Math.max(4, lineWidth(node));
+      return contentHeight + paddingBelow + gap;
+    }
+
+    // All other nodes keep the standard baseline just below their content.
+    return contentHeight + lineWidth(node) / 2;
   }
 
   setOptions(opts?: Partial<IMarkmapOptions>): void {
@@ -439,6 +723,14 @@ export class Markmap {
     const rootNode = this.state.data;
     if (!rootNode) return;
 
+    // Calculate root padding early (needed for foreignObject positioning)
+    const rootHasMulti = !!rootNode?.payload?.hasMultiDirectionalLayout;
+    const rootHasBilateral = !!rootNode?.payload?.hasBilateralLayout;
+    this._rootPaddingX =
+      rootHasMulti || rootHasBilateral ? Math.max(12, paddingX * 0.8) : 0;
+    this._rootPaddingY =
+      rootHasMulti || rootHasBilateral ? Math.max(6, lineWidth(rootNode)) : 0;
+
     // Call beforeLayout hook BEFORE collecting nodes
     // This allows plugins to filter children before walkTree runs
     this.hooks.beforeLayout?.(rootNode, this.options);
@@ -472,6 +764,145 @@ export class Markmap {
     };
     const getOriginTargetRect = (node: INode) =>
       (nodeMap[originMap[node.state.id]] || rootNode).state.rect;
+    const getCollapseParentRect = (node: INode) => {
+      const originId = originMap[node.state.id];
+      if (originId && sourceRectMap[originId]) return sourceRectMap[originId];
+      const parentId = parentMap[node.state.id];
+      if (parentId && sourceRectMap[parentId]) return sourceRectMap[parentId];
+      return sourceRectMap[rootNode.state.id] || rootNode.state.rect;
+    };
+    const getCollapseAnchor = (
+      parent: INode,
+      child: INode,
+      parentRect: { x: number; y: number; width: number; height: number },
+    ): [number, number] => {
+      const dir = child.payload?.direction;
+      const baseline = this._getBaselineY(parent);
+
+      if (dir === 'left') return [parentRect.x, parentRect.y + baseline];
+      if (dir === 'right')
+        return [parentRect.x + parentRect.width, parentRect.y + baseline];
+      if (dir === 'top-left')
+        return [parentRect.x + parentRect.width * 0.3, parentRect.y];
+      if (dir === 'top-right')
+        return [parentRect.x + parentRect.width * 0.7, parentRect.y];
+      if (dir === 'bottom-left')
+        return [parentRect.x + parentRect.width * 0.3, parentRect.y + baseline];
+      if (dir === 'bottom-right')
+        return [parentRect.x + parentRect.width * 0.7, parentRect.y + baseline];
+
+      const targetOnLeft =
+        (child.state?.rect?.x ?? 0) < (parent.state?.rect?.x ?? 0);
+      return targetOnLeft
+        ? [parentRect.x, parentRect.y + baseline]
+        : [parentRect.x + parentRect.width, parentRect.y + baseline];
+    };
+
+    const buildLinkPath = (
+      sourceNode: INode,
+      targetNode: INode,
+      sourceRectOverride?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      },
+      targetRectOverride?: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      },
+    ): string | undefined => {
+      const sourceRect = sourceRectOverride || sourceNode.state.rect;
+      const targetRect = targetRectOverride || targetNode.state.rect;
+
+      // Only allow custom link hook when using live layout rects
+      if (!sourceRectOverride && !targetRectOverride) {
+        const customLink = this.hooks.renderLink?.(
+          sourceNode,
+          targetNode,
+          this.options,
+        );
+        if (customLink) return customLink;
+      }
+
+      const sourceBaseline = this._getBaselineY(sourceNode);
+      const targetBaseline = this._getBaselineY(targetNode);
+      const targetDirection = targetNode.payload?.direction as string;
+      const isVerticalTarget =
+        targetDirection?.startsWith('top-') ||
+        targetDirection?.startsWith('bottom-');
+
+      let source: [number, number];
+      let target: [number, number];
+
+      if (isVerticalTarget) {
+        const targetDepth = targetNode.state?.depth || 0;
+        const isDirectChild = targetDepth === 2;
+        const isTop = targetDirection.startsWith('top-');
+        const isLeft = targetDirection.endsWith('-left');
+
+        if (isDirectChild) {
+          const sourceX = isLeft
+            ? sourceRect.x + sourceRect.width * 0.3
+            : sourceRect.x + sourceRect.width * 0.7;
+          const sourceY = isTop ? sourceRect.y : sourceRect.y + sourceBaseline;
+
+          const targetOnLeft = targetRect.x < sourceRect.x;
+          const targetX = targetOnLeft
+            ? targetRect.x + targetRect.width
+            : targetRect.x;
+          const targetY = targetRect.y + targetBaseline;
+          return (
+            linkShape({
+              source: [sourceX, sourceY],
+              target: [targetX, targetY],
+            }) || undefined
+          );
+        }
+
+        const targetOnLeft = targetRect.x < sourceRect.x;
+        if (targetOnLeft) {
+          source = [sourceRect.x, sourceRect.y + sourceBaseline];
+          target = [
+            targetRect.x + targetRect.width,
+            targetRect.y + targetBaseline,
+          ];
+        } else {
+          source = [
+            sourceRect.x + sourceRect.width,
+            sourceRect.y + sourceBaseline,
+          ];
+          target = [targetRect.x, targetRect.y + targetBaseline];
+        }
+      } else {
+        const sourceOnLeft = sourceRect.x < 0;
+        const targetOnLeft = targetRect.x < 0;
+
+        if (targetOnLeft && sourceOnLeft) {
+          source = [sourceRect.x, sourceRect.y + sourceBaseline];
+          target = [
+            targetRect.x + targetRect.width,
+            targetRect.y + targetBaseline,
+          ];
+        } else if (targetOnLeft && !sourceOnLeft) {
+          source = [sourceRect.x, sourceRect.y + sourceBaseline];
+          target = [
+            targetRect.x + targetRect.width,
+            targetRect.y + targetBaseline,
+          ];
+        } else {
+          source = [
+            sourceRect.x + sourceRect.width,
+            sourceRect.y + sourceBaseline,
+          ];
+          target = [targetRect.x, targetRect.y + targetBaseline];
+        }
+      }
+
+      return linkShape({ source, target }) || undefined;
+    };
     sourceRectMap[rootNode.state.id] = rootNode.state.rect;
     if (originData) setOriginNode(originData);
 
@@ -515,12 +946,14 @@ export class Markmap {
           .join(' '),
       );
 
-    // Update lines under the content
+    // Update lines/borders under the content
+    // All nodes get an underline
+    // Bilateral/multi-directional root nodes also get a top border line
     const mmLine = mmGMerge
       .selectAll<SVGLineElement, INode>(childSelector<SVGLineElement>('line'))
       .data(
         (d) => [d],
-        (d) => d.state.key,
+        (d) => d?.state?.key || '',
       );
     const mmLineEnter = mmLine
       .enter()
@@ -529,9 +962,46 @@ export class Markmap {
       .attr('stroke-width', 0);
     const mmLineMerge = mmLine.merge(mmLineEnter);
 
+    // Add top border for bilateral/multi-directional root node
+    const rootBorderHasMulti =
+      !!this.state.data?.payload?.hasMultiDirectionalLayout;
+    const rootBorderHasBilateral =
+      !!this.state.data?.payload?.hasBilateralLayout;
+    const rootBorderData =
+      rootBorderHasMulti || rootBorderHasBilateral
+        ? [{ node: this.state.data, pos: 'top' as const }]
+        : [];
+    const mmRootBorders = mmGMerge
+      .selectAll<
+        SVGLineElement,
+        { node: INode; pos: 'top' | 'bottom' }
+      >('line.markmap-root-border')
+      .data(
+        (d) => (d.state.depth === 1 ? rootBorderData : []),
+        (d) =>
+          d?.node?.state?.key
+            ? `${d.node.state.key}-${d.pos}`
+            : `root-border-${d?.pos || 'unknown'}`,
+      );
+    mmRootBorders
+      .enter()
+      .append('line')
+      .attr('class', 'markmap-root-border')
+      .attr('stroke-width', 0);
+
     // Circle to link to children of the node
-    // For bilateral layout, we need TWO circles (left and right)
-    type CircleData = { node: INode; side: 'left' | 'right' | 'default' };
+    // For multi-directional layout, we can have up to 6 circles
+    type CircleData = {
+      node: INode;
+      side:
+        | 'left'
+        | 'right'
+        | 'top-left'
+        | 'top-right'
+        | 'bottom-left'
+        | 'bottom-right'
+        | 'default';
+    };
     const mmCircle = mmGMerge
       .selectAll<
         SVGCircleElement,
@@ -539,7 +1009,31 @@ export class Markmap {
       >(childSelector<SVGCircleElement>('circle'))
       .data(
         (d): CircleData[] => {
-          // Special case: bilateral root gets two circles regardless of current visible children
+          // Special case: multi-directional root gets up to 6 circles
+          if (d.payload?.hasMultiDirectionalLayout) {
+            const circles: CircleData[] = [];
+            if ((d.payload.leftChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'left' });
+            }
+            if ((d.payload.rightChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'right' });
+            }
+            if ((d.payload.topLeftChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'top-left' });
+            }
+            if ((d.payload.topRightChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'top-right' });
+            }
+            if ((d.payload.bottomLeftChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'bottom-left' });
+            }
+            if ((d.payload.bottomRightChildrenCount as number) > 0) {
+              circles.push({ node: d, side: 'bottom-right' });
+            }
+            return circles;
+          }
+
+          // Backwards compatibility: bilateral root gets two circles
           if (d.payload?.hasBilateralLayout) {
             const circles: CircleData[] = [];
             if ((d.payload.leftChildrenCount as number) > 0) {
@@ -570,17 +1064,23 @@ export class Markmap {
       .attr('stroke', (d) => color(d.node))
       .attr('fill', (d) => {
         const node = d.node;
-        // For bilateral layout, check the appropriate fold state
-        if (d.side === 'left') {
-          return ((node.payload?.leftFolded as number) ?? 0)
+        // For multi-directional layout, check the appropriate fold state
+        const foldStateMap: Record<string, string> = {
+          left: 'leftFolded',
+          right: 'rightFolded',
+          'top-left': 'topLeftFolded',
+          'top-right': 'topRightFolded',
+          'bottom-left': 'bottomLeftFolded',
+          'bottom-right': 'bottomRightFolded',
+        };
+
+        if (d.side in foldStateMap) {
+          const foldKey = foldStateMap[d.side];
+          return ((node.payload?.[foldKey] as number) ?? 0)
             ? color(node)
             : 'var(--markmap-circle-open-bg)';
         }
-        if (d.side === 'right') {
-          return ((node.payload?.rightFolded as number) ?? 0)
-            ? color(node)
-            : 'var(--markmap-circle-open-bg)';
-        }
+
         // Default behavior
         return node.payload?.fold && node.children
           ? color(node)
@@ -602,7 +1102,12 @@ export class Markmap {
       .enter()
       .append('foreignObject')
       .attr('class', 'markmap-foreign')
-      .attr('x', paddingX)
+      .attr('x', (d) =>
+        d.state.depth === 1 &&
+        (d.payload?.hasMultiDirectionalLayout || d.payload?.hasBilateralLayout)
+          ? paddingX + this._rootPaddingX
+          : paddingX,
+      )
       .attr('y', 0)
       .style('opacity', 0)
       .on('mousedown', stopPropagation)
@@ -612,6 +1117,13 @@ export class Markmap {
       .append<HTMLDivElement>('xhtml:div')
       // The inner `<div>` with `display: inline-block` to get the proper width
       .append<HTMLDivElement>('xhtml:div')
+      .style('text-align', (d) => {
+        const hasMulti =
+          d.state.depth === 1 &&
+          (d.payload?.hasMultiDirectionalLayout ||
+            d.payload?.hasBilateralLayout);
+        return hasMulti ? 'center' : null;
+      })
       .html((d) => d.content)
       .attr('xmlns', 'http://www.w3.org/1999/xhtml');
     mmFoEnter.each(function () {
@@ -631,7 +1143,10 @@ export class Markmap {
     const links = nodes.flatMap((node) =>
       node.payload?.fold
         ? []
-        : node.children.map((child) => ({ source: node, target: child })),
+        : (node.children || []).map((child) => ({
+            source: node,
+            target: child,
+          })),
     );
     const mmPath = this.g
       .selectAll<
@@ -647,12 +1162,9 @@ export class Markmap {
       .attr('data-depth', (d) => d.target.state.depth)
       .attr('data-path', (d) => d.target.state.path)
       .attr('d', (d) => {
-        const originRect = getOriginSourceRect(d.target);
-        const pathOrigin: [number, number] = [
-          originRect.x + originRect.width,
-          originRect.y + originRect.height,
-        ];
-        return linkShape({ source: pathOrigin, target: pathOrigin });
+        const parentRect = getCollapseParentRect(d.target);
+        const anchor = getCollapseAnchor(d.source, d.target, parentRect);
+        return linkShape({ source: anchor, target: anchor });
       })
       .attr('stroke-width', 0);
     const mmPathMerge = mmPathEnter.merge(mmPath);
@@ -698,19 +1210,37 @@ export class Markmap {
       childSelector<SVGLineElement>('line'),
     );
     this.transition(mmLineExit)
-      .attr('x1', (d) => d.state.rect.width)
+      .attr('x1', (d) => d?.state?.rect?.width || 0)
       .attr('stroke-width', 0);
     mmLineEnter
       .attr('x1', (d) => d.state.rect.width)
       .attr('x2', (d) => d.state.rect.width);
+    const rootBaselineY = this._getBaselineY(rootNode);
     mmLineMerge
-      .attr('y1', (d) => d.state.rect.height + lineWidth(d) / 2)
-      .attr('y2', (d) => d.state.rect.height + lineWidth(d) / 2);
+      .attr('y1', (d) => this._getBaselineY(d))
+      .attr('y2', (d) => this._getBaselineY(d));
     this.transition(mmLineMerge)
       .attr('x1', -1)
       .attr('x2', (d) => d.state.rect.width + 2)
       .attr('stroke', (d) => color(d))
       .attr('stroke-width', lineWidth);
+    this.transition(mmRootBorders)
+      .style('pointer-events', 'none')
+      .attr('x1', () => 0)
+      .attr('x2', (d) => d.node.state.rect.width)
+      .attr('y1', (d) => {
+        if (!d.node) return 0;
+        if (d.pos === 'top') return 0;
+        return rootBaselineY;
+      })
+      .attr('y2', (d) => {
+        if (!d.node) return 0;
+        if (d.pos === 'top') return 0;
+        return rootBaselineY;
+      })
+      .attr('stroke', (d) => color(d.node))
+      .attr('stroke-width', (d) => lineWidth(d.node));
+    this.transition(mmRootBorders.exit()).attr('stroke-width', 0).remove();
 
     const mmCircleExit = mmGExit.selectAll<SVGCircleElement, CircleData>(
       childSelector<SVGCircleElement>('circle'),
@@ -718,31 +1248,130 @@ export class Markmap {
     this.transition(mmCircleExit).attr('r', 0).attr('stroke-width', 0);
     mmCircleMerge
       // Place circles on the edge that connects to the parent
-      // For bilateral root: left circle on left edge, right circle on right edge
-      // For normal nodes: left branch uses left edge, right branch uses right edge
+      // For multi-directional root: circles on all edges
       .attr('cx', (d) => {
         if (d.side === 'left') return 0;
         if (d.side === 'right') return d.node.state.rect.width;
+        if (d.side === 'top-left') return d.node.state.rect.width * 0.3;
+        if (d.side === 'top-right') return d.node.state.rect.width * 0.7;
+        if (d.side === 'bottom-left') return d.node.state.rect.width * 0.3;
+        if (d.side === 'bottom-right') return d.node.state.rect.width * 0.7;
         // Default behavior: place on appropriate edge based on position
         return d.node.state.rect.x < 0 ? 0 : d.node.state.rect.width;
       })
-      .attr('cy', (d) => d.node.state.rect.height + lineWidth(d.node) / 2);
+      .attr('cy', (d) => {
+        if (d.side === 'top-left' || d.side === 'top-right') {
+          // Attach to top border line at y=0
+          return 0;
+        }
+
+        // Place baseline circles using calculated baseline (keeps baselines aligned)
+        return this._getBaselineY(d.node);
+      });
     this.transition(mmCircleMerge).attr('r', 6).attr('stroke-width', '1.5');
+
+    // Master toggle chevron for root nodes (collapse/expand all)
+    const masterToggle = mmGMerge
+      .selectAll<SVGGElement, INode>('g.markmap-master-toggle')
+      .data(
+        (d) =>
+          d.state.depth === 1 && this.shouldShowMasterToggle(d) ? [d] : [],
+        (d) => d.state.key,
+      );
+    const masterEnter = masterToggle
+      .enter()
+      .append('g')
+      .attr('class', 'markmap-master-toggle')
+      .style('opacity', 0)
+      .style('cursor', 'pointer')
+      .on('click', (e, d) => this.handleMasterToggle(e, d))
+      .on('mousedown', stopPropagation);
+    masterEnter
+      .append('rect')
+      .attr('class', 'markmap-master-hit')
+      .attr('x', -6)
+      .attr('y', -8)
+      .attr('width', 16)
+      .attr('height', 16)
+      .attr('fill', 'transparent')
+      .style('pointer-events', 'all');
+    masterEnter.append('path').attr('fill', 'none').attr('stroke-width', 1.5);
+    const masterMerge = masterEnter.merge(masterToggle as any);
+
+    masterMerge.attr('transform', (d) => {
+      const hasMulti =
+        d.payload?.hasMultiDirectionalLayout || d.payload?.hasBilateralLayout;
+      const textWidth = d.state.size?.[0] || d.state.rect.width;
+      const textHeight = d.state.size?.[1] || d.state.rect.height;
+      const textStartX = hasMulti ? paddingX + this._rootPaddingX : paddingX;
+      const y = (hasMulti ? this._rootPaddingY / 2 : 0) + textHeight * 0.5;
+      const x = textStartX + textWidth + paddingX * 0.9;
+      return `translate(${x},${y})`;
+    });
+    masterMerge
+      .select('path')
+      .attr('stroke', (d) => color(d))
+      .attr('d', (d) => {
+        const folded = this.isRootFullyFolded(d);
+        // Right chevron when expanded (folded=false), Down chevron when folded=true
+        return folded ? 'M -5 -1 L 0 5 L 5 -1' : 'M -4 -4 L 2 0 L -4 4';
+      })
+      .style('opacity', (d) => ((d.state.size?.[0] || 0) > 0 ? 1 : 0));
+    this.transition(masterMerge).style('opacity', (d) =>
+      (d.state.size?.[0] || 0) > 0 ? 1 : 0,
+    );
+    const masterExit = masterToggle.exit<SVGGElement, INode>();
+    this.transition(masterExit).style('opacity', 0).remove();
 
     this.transition(mmFoExit).style('opacity', 0);
     mmFoMerge
+      .attr('y', (d) => {
+        const hasMulti =
+          d.state.depth === 1 &&
+          (d.payload?.hasMultiDirectionalLayout ||
+            d.payload?.hasBilateralLayout);
+        return hasMulti ? this._rootPaddingY / 2 : 0;
+      })
+      .attr('x', (d) => {
+        const hasMulti =
+          d.state.depth === 1 &&
+          (d.payload?.hasMultiDirectionalLayout ||
+            d.payload?.hasBilateralLayout);
+        return hasMulti ? paddingX + this._rootPaddingX : paddingX;
+      })
       .attr('width', (d) => Math.max(0, d.state.rect.width - paddingX * 2))
-      .attr('height', (d) => d.state.rect.height);
+      .attr('height', (d) => {
+        const hasMulti =
+          d.state.depth === 1 &&
+          (d.payload?.hasMultiDirectionalLayout ||
+            d.payload?.hasBilateralLayout);
+        if (hasMulti) {
+          return d.state.size?.[1] || d.state.rect.height;
+        }
+        return d.state.rect.height;
+      });
     this.transition(mmFoMerge).style('opacity', 1);
 
     this.transition(mmPathExit)
-      .attr('d', (d) => {
-        const targetRect = getOriginTargetRect(d.target);
-        const pathTarget: [number, number] = [
-          targetRect.x + targetRect.width,
-          targetRect.y + targetRect.height + lineWidth(d.target) / 2,
-        ];
-        return linkShape({ source: pathTarget, target: pathTarget });
+      .attrTween('d', function (d) {
+        const parentStartRect =
+          sourceRectMap[d.source.state.id] || getCollapseParentRect(d.target);
+        const parentEndRect = d.source.state.rect;
+        const anchorEnd = getCollapseAnchor(d.source, d.target, parentEndRect);
+        const historicalPath =
+          buildLinkPath(
+            d.source,
+            d.target,
+            parentStartRect,
+            sourceRectMap[d.target.state.id],
+          ) || '';
+        const currentD = this.getAttribute('d') || '';
+        const pathStart = currentD !== '' ? currentD : historicalPath || '';
+        const pathTarget =
+          linkShape({ source: anchorEnd, target: anchorEnd }) || '';
+        if (!pathStart) return () => pathTarget;
+        const interp = interpolateString(pathStart, pathTarget);
+        return (t) => interp(Math.min(1, Math.max(0, t)));
       })
       .attr('stroke-width', 0)
       .remove();
@@ -751,78 +1380,7 @@ export class Markmap {
       .attr('stroke', (d) => color(d.target))
       .attr('stroke-width', (d) => lineWidth(d.target))
       .attr('d', (d) => {
-        const origSource = d.source;
-        const origTarget = d.target;
-
-        // Call renderLink hook for plugins
-        const customLink = this.hooks.renderLink?.(
-          origSource,
-          origTarget,
-          this.options,
-        );
-        if (customLink) return customLink;
-
-        // Check if nodes are on the left side (negative x after flipping)
-        const sourceOnLeft = origSource.state.rect.x < 0;
-        const targetOnLeft = origTarget.state.rect.x < 0;
-
-        // Link rendering
-        let source: [number, number];
-        let target: [number, number];
-
-        if (targetOnLeft && sourceOnLeft) {
-          // Both on left side: children extend leftward from parent
-          // Parent's collapse circle is on left edge, child extends further left
-          // Connect: parent left edge (circle) → child right edge
-          // Example: Charlie (x=-100, left edge at -100) → Charlie Child 2 (x=-300, right edge at -200)
-          source = [
-            origSource.state.rect.x, // Parent's left edge (collapse circle is here)
-            origSource.state.rect.y +
-              origSource.state.rect.height +
-              lineWidth(origSource) / 2,
-          ];
-          target = [
-            origTarget.state.rect.x + origTarget.state.rect.width, // Child's right edge
-            origTarget.state.rect.y +
-              origTarget.state.rect.height +
-              lineWidth(origTarget) / 2,
-          ];
-        } else if (targetOnLeft && !sourceOnLeft) {
-          // Source on right, target on left: connection from root to flipped branch
-          // Root's left edge connects to left-side child's right edge
-          // Connect: root left edge → flipped child right edge
-          source = [
-            origSource.state.rect.x, // Root's left edge
-            origSource.state.rect.y +
-              origSource.state.rect.height +
-              lineWidth(origSource) / 2,
-          ];
-          target = [
-            origTarget.state.rect.x + origTarget.state.rect.width, // Flipped child's right edge
-            origTarget.state.rect.y +
-              origTarget.state.rect.height +
-              lineWidth(origTarget) / 2,
-          ];
-        } else {
-          // Both on right side (default): children extend rightward from parent
-          // Parent's collapse circle is on right edge, child extends further right
-          // Connect: parent right edge (circle) → child left edge
-          // Example: Alice (x=100, right edge at 200) → Alice Child 1 (x=300, left edge at 300)
-          source = [
-            origSource.state.rect.x + origSource.state.rect.width, // Parent's right edge (collapse circle is here)
-            origSource.state.rect.y +
-              origSource.state.rect.height +
-              lineWidth(origSource) / 2,
-          ];
-          target = [
-            origTarget.state.rect.x, // Child's left edge
-            origTarget.state.rect.y +
-              origTarget.state.rect.height +
-              lineWidth(origTarget) / 2,
-          ];
-        }
-
-        return linkShape({ source, target });
+        return buildLinkPath(d.source, d.target) || '';
       });
 
     if (autoFit) this.fit();
