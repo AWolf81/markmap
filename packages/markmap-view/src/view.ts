@@ -1356,20 +1356,18 @@ export class Markmap {
       .attrTween('d', function (d) {
         const parentStartRect =
           sourceRectMap[d.source.state.id] || getCollapseParentRect(d.target);
-        const parentEndRect = d.source.state.rect;
-        const anchorEnd = getCollapseAnchor(d.source, d.target, parentEndRect);
-        const historicalPath =
+        const anchor = getCollapseAnchor(d.source, d.target, parentStartRect);
+        const currentD = this.getAttribute('d') || '';
+        const pathStart =
+          currentD ||
           buildLinkPath(
             d.source,
             d.target,
             parentStartRect,
             sourceRectMap[d.target.state.id],
-          ) || '';
-        const currentD = this.getAttribute('d') || '';
-        const pathStart = currentD !== '' ? currentD : historicalPath || '';
-        const pathTarget =
-          linkShape({ source: anchorEnd, target: anchorEnd }) || '';
-        if (!pathStart) return () => pathTarget;
+          ) ||
+          '';
+        const pathTarget = linkShape({ source: anchor, target: anchor }) || '';
         const interp = interpolateString(pathStart, pathTarget);
         return (t) => interp(Math.min(1, Math.max(0, t)));
       })

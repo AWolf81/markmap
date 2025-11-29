@@ -1,0 +1,478 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Markmap Alternate Direction – Minimal Test</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        display: flex;
+        height: 100vh;
+      }
+      #panel {
+        width: 360px;
+        padding: 12px;
+        box-sizing: border-box;
+        border-right: 1px solid #e0e0e0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #panel h1 {
+        margin: 0;
+        font-size: 16px;
+      }
+      textarea {
+        flex: 1;
+        width: 100%;
+        box-sizing: border-box;
+        font-family: monospace;
+        font-size: 13px;
+      }
+      button {
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      #view {
+        flex: 1;
+      }
+      #view svg {
+        width: 100%;
+        height: 100%;
+      }
+      #toolbar {
+        position: absolute;
+        bottom: 12px;
+        right: 12px;
+      }
+      .markmap-dark,
+      .markmap-dark body {
+        background: #27272a;
+        color: #fff;
+      }
+      .markmap-dark .markmap {
+        --markmap-code-bg: #1a1b26;
+        --markmap-code-color: #ddd;
+        --markmap-circle-open-bg: #444;
+        --markmap-text-color: #eee;
+      }
+      /* Fix checkbox SVG size and alignment */
+      .markmap-foreign svg {
+        width: 16px !important;
+        height: 16px !important;
+        vertical-align: text-bottom;
+        margin-bottom: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <h1>Markmap test</h1>
+      <label>
+        Example:
+        <select id="example">
+          <option value="normal">Normal</option>
+          <option value="manual">Manual flip</option>
+          <option value="alternate">Alternate</option>
+          <option value="balanced">Balanced</option>
+          <option value="mixed">Mixed</option>
+          <option value="complex">6-Way Complex Layout</option>
+        </select>
+      </label>
+      <textarea id="md" spellcheck="false"></textarea>
+      <div>
+        <button id="render">Render</button>
+        <button id="fit">Fit</button>
+      </div>
+      <div>
+        <label>
+          <input id="dark-toggle" type="checkbox" />
+          Dark mode
+        </label>
+      </div>
+      <div id="toolbar"></div>
+    </div>
+    <div id="view">
+      <svg id="markmap"></svg>
+    </div>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/style.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.js"></script>
+    <script src="packages/markmap-lib/dist/browser/index.iife.js?v=3"></script>
+    <script src="packages/markmap-view/dist/browser/index.js?v=3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/index.min.js"></script>
+    <script>
+      const { Transformer, Markmap, deriveOptions, loadCSS, loadJS, defaultColorFn } = window.markmap;
+      const Toolbar =
+        (window.markmap && window.markmap.Toolbar) ||
+        (window.markmapToolbar && window.markmapToolbar.Toolbar);
+      const svg = document.getElementById('markmap');
+      const textarea = document.getElementById('md');
+      const exampleSelect = document.getElementById('example');
+      let mm;
+      let toolbar;
+
+      let transformer = new Transformer();
+
+      // Listen to retransform hook from plugins (hljs, katex auto-loaders)
+      transformer.hooks.retransform.tap(() => {
+        console.log('🔄 Retransform triggered by plugin (likely hljs or katex loaded)');
+        render();
+      });
+
+      const examples = {
+        // all rendered to the right
+        normal: `---
+title: markmap
+markmap:
+  colorFreezeLevel: 2
+---
+
+## Links
+
+- [Website](https://markmap.js.org/)
+- [GitHub](https://github.com/gera2ld/markmap)
+
+## Related Projects
+
+- [coc-markmap](https://github.com/gera2ld/coc-markmap) for Neovim
+- [markmap-vscode](https://marketplace.visualstudio.com/items?itemName=gera2ld.markmap-vscode) for VSCode
+- [eaf-markmap](https://github.com/emacs-eaf/eaf-markmap) for Emacs
+
+## Features
+
+Note that if blocks and lists appear at the same level, the lists will be ignored.
+
+### Lists
+
+- **strong** ~~del~~ *italic* ==highlight==
+- \`inline code\`
+- [x] checkbox
+- Katex: $x = {-b \\pm \\sqrt{b^2-4ac} \\over 2a}$ <!-- markmap: fold -->
+  - [More Katex Examples](#?d=gist:af76a4c245b302206b16aec503dbe07b:katex.md)
+- Now we can wrap very very very very long text with the \`maxWidth\` option
+- Ordered list
+  1. item 1
+  2. item 2
+
+### Blocks
+
+\`\`\`js
+console.log('hello, JavaScript')
+\`\`\`
+
+| Products | Price |
+|-|-|
+| Apple | 4 |
+| Banana | 2 |
+
+![](https://markmap.js.org/favicon.png)
+`,
+        manual: `# Manual Flip Mode
+
+## Default Side (Right)
+- Alice
+  - Alice Child 1
+  - Alice Child 2
+- Bob
+  - Bob Child 1
+
+## Flipped Side (Left) <!-- markmap: flip -->
+- Charlie
+  - Charlie Child 1
+  - Charlie Child 2
+    - Grandchild 1
+    - Grandchild 2
+- David
+  - David Child 1
+
+## Back to Default
+- Eve
+  - Eve Child 1`,
+
+        alternate: `---
+markmap:
+  alternateLayout: alternate
+---
+
+# Alternate Layout Strategy
+
+## Features (even → right)
+- Feature 0
+- Feature 1
+- Feature 2
+- Feature 3
+
+## Example (odd → left)
+- Example 1
+- Example 2
+
+## Notes
+- Default rule: even → right, odd → left
+- Flip marker overrides the auto side. Not used here.`,
+
+        balanced: `---
+markmap:
+  alternateLayout: balanced
+---
+
+# Balanced Layout Strategy
+
+## Large Branch
+- Sub 1
+  - Deep 1
+  - Deep 2
+  - Deep 3
+- Sub 2
+  - Deep A
+  - Deep B
+- Sub 3
+
+## Small Branch
+- Single Leaf
+
+## Medium Branch
+- Sub M1
+  - Deep X
+- Sub M2
+
+## Another Large
+- Sub 4
+  - Level 3
+    - Level 3.1
+    - Level 3.2
+  - Level 4
+    - Level 4.1
+    - Level 4.2
+
+- Sub 5`,
+
+        mixed: `---
+markmap:
+  alternateLayout: alternate
+---
+
+# Mixed: Auto + Manual Override
+
+## Auto Right (even index)
+- This goes right automatically
+
+## Manual Left Override <!-- markmap: flip -->
+- This is manually flipped to the right
+- Overrides the auto-left
+
+## Auto Right (even index)
+- Back to automatic right
+
+## Auto Left (odd index)
+- This goes left automatically`,
+
+        complex: `---
+markmap:
+  colorFreezeLevel: 2
+---
+
+# Project Architecture
+
+## Left Branch <!-- markmap: direction=left -->
+- Backend Services
+  - API Gateway
+    - REST Endpoints
+    - GraphQL Support
+  - Microservices
+    - User Service
+    - Auth Service
+  - Message Queue
+    - RabbitMQ
+    - Kafka
+
+## Right Branch <!-- markmap: direction=right -->
+- Frontend Stack
+  - React Application
+    - Component Library
+    - State Management
+  - Build Tools
+    - Webpack
+    - Babel
+  - Testing Suite
+    - Jest
+    - React Testing Library
+
+## Right Branch 2 <!-- markmap: direction=right -->
+- Platform Operations
+  - API Platform
+    - Security Policies
+    - Traffic Controls
+  - Observability
+    - Metrics
+    - Distributed Tracing
+  - Feature Delivery
+    - Flags & Experiments
+    - Rollout Playbooks
+
+## Top Left <!-- markmap: direction=top-left -->
+- Planning Phase
+  - Requirements Analysis
+    - Functional Specs
+    - Non-functional Requirements
+  - Architecture Design
+    - System Design
+    - Database Schema
+
+## Top Right <!-- markmap: direction=top-right -->
+- Quality Assurance
+  - Testing Strategy
+    - Unit Tests
+    - Integration Tests
+  - Code Review
+    - PR Guidelines
+    - Best Practices
+
+## Top Right 2 <!-- markmap: direction=top-right -->
+- Release Management
+  - Launch Checklists
+  - Change Advisory
+  - Regression Playbooks
+- Product Readiness
+  - Smoke Tests
+  - Beta Feedback Loops
+
+## Bottom Left <!-- markmap: direction=bottom-left -->
+- DevOps Pipeline
+  - CI/CD
+    - GitHub Actions
+    - Jenkins
+  - Infrastructure
+    - AWS Services
+    - Docker Containers
+  - Monitoring
+    - Prometheus
+    - Grafana
+
+## Bottom Right <!-- markmap: direction=bottom-right -->
+- Documentation
+  - Technical Docs
+    - API Reference
+    - Architecture Guide
+  - User Guides
+    - Getting Started
+    - Tutorials
+
+## Bottom Right 2 <!-- markmap: direction=bottom-right -->
+- Developer Enablement
+  - Onboarding Kits
+  - Coding Standards
+  - Sample Projects
+- Support Content
+  - Troubleshooting
+  - FAQ`,
+      };
+
+      function loadExample(key) {
+        textarea.value = examples[key] || '';
+      }
+
+      async function applyAssets(assets) {
+        const loaders = [];
+        if (assets?.styles?.length) loaders.push(loadCSS(assets.styles));
+        if (assets?.scripts?.length) loaders.push(loadJS(assets.scripts, { defer: true }));
+        if (loaders.length) await Promise.all(loaders);
+      }
+
+      function ensureToolbar(instance) {
+        if (!Toolbar || !instance) return;
+        const toolbarHost = document.getElementById('toolbar');
+        if (!toolbarHost) return;
+        toolbarHost.innerHTML = '';
+        toolbar = new Toolbar();
+        toolbar.attach(instance);
+        toolbar.setItems(Toolbar.defaultItems);
+        const el = toolbar.render();
+        el.style.position = 'initial';
+        toolbarHost.append(el);
+      }
+
+      async function render() {
+        const md = textarea.value;
+        const { root, frontmatter } = transformer.transform(md);
+        const assets = transformer.getAssets();
+
+        const baseOptions = {
+          paddingX: 12,
+          spacingVertical: 8,
+          spacingHorizontal: 100,
+          duration: 2000,
+          zoom: true,
+          pan: true,
+        };
+        const derived =
+          typeof deriveOptions === 'function'
+            ? deriveOptions(frontmatter?.markmap || {})
+            : {};
+        // Order: base -> frontmatter (custom keys like alternateLayout) -> derived (processed options like color/colorFreeze)
+        const options = {
+          ...baseOptions,
+          ...(frontmatter?.markmap || {}),
+          ...derived,
+        };
+
+        // Reset options that should not persist between renders
+        // When colorFreezeLevel is removed, we must explicitly provide the default color function
+        // to override the frozen one from the previous render
+        if (!frontmatter?.markmap?.colorFreezeLevel && !frontmatter?.markmap?.color) {
+          delete options.colorFreezeLevel;
+          if (!derived.color && defaultColorFn) {
+            // Provide the default color function: each path gets its own color
+            options.color = (node) => defaultColorFn(`${node.state?.path || ''}`);
+          }
+        }
+        if (!frontmatter?.markmap?.alternateLayout) {
+          delete options.alternateLayout;
+        }
+
+        // Load required assets (katex/css, etc.) before rendering
+        await applyAssets(assets);
+
+        if (!mm) {
+          mm = Markmap.create(svg, options, root);
+          ensureToolbar(mm);
+        } else {
+          mm.setData(root, options);
+        }
+
+        if (assets.viewHooks) {
+          mm.registerHooks(assets.viewHooks);
+        }
+      }
+
+      document.getElementById('render').addEventListener('click', async () => {
+        await render();
+        if (mm) mm.fit();
+      });
+      document.getElementById('fit').addEventListener('click', () => mm && mm.fit());
+
+      document.getElementById('dark-toggle').addEventListener('change', (e) => {
+        const isDark = e.target.checked;
+        document.body.classList.toggle('dark', isDark);
+        document.documentElement.classList.toggle('markmap-dark', isDark);
+      });
+
+      window.addEventListener('DOMContentLoaded', async () => {
+        loadExample('normal');
+        await render();
+        if (mm) mm.fit();
+      });
+
+      exampleSelect.addEventListener('change', async () => {
+        loadExample(exampleSelect.value);
+        await render();
+        if (mm) mm.fit();
+      });
+    </script>
+  </body>
+</html>
