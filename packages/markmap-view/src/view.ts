@@ -8,7 +8,6 @@ import {
   zoom,
   zoomIdentity,
   zoomTransform,
-  interpolateString,
 } from 'd3';
 import { flextree } from 'd3-flextree';
 import {
@@ -556,7 +555,7 @@ export class Markmap {
       // Add padding above and below for top border and circles
       const rootHeight = rootH + rootPaddingY * 2;
       rootNode.state.rect = {
-        x: -rootWidth / 2,
+        x: -rootPaddingX, // Start at -padding to keep content centered, but don't center the whole rect
         y: -rootHeight / 2,
         width: rootWidth,
         height: rootHeight,
@@ -594,7 +593,7 @@ export class Markmap {
       // Add padding above and below for top border and circles
       const rootHeight = rootH + rootPaddingY * 2;
       rootNode.state.rect = {
-        x: -rootWidth / 2,
+        x: -rootPaddingX, // Start at -padding to keep content centered, but don't center the whole rect
         y: -rootHeight / 2,
         width: rootWidth,
         height: rootHeight,
@@ -761,41 +760,6 @@ export class Markmap {
     const getOriginSourceRect = (node: INode) => {
       const rect = sourceRectMap[originMap[node.state.id]];
       return rect || rootNode.state.rect;
-    };
-    const getOriginTargetRect = (node: INode) =>
-      (nodeMap[originMap[node.state.id]] || rootNode).state.rect;
-    const getCollapseParentRect = (node: INode) => {
-      const originId = originMap[node.state.id];
-      if (originId && sourceRectMap[originId]) return sourceRectMap[originId];
-      const parentId = parentMap[node.state.id];
-      if (parentId && sourceRectMap[parentId]) return sourceRectMap[parentId];
-      return sourceRectMap[rootNode.state.id] || rootNode.state.rect;
-    };
-    const getCollapseAnchor = (
-      parent: INode,
-      child: INode,
-      parentRect: { x: number; y: number; width: number; height: number },
-    ): [number, number] => {
-      const dir = child.payload?.direction;
-      const baseline = this._getBaselineY(parent);
-
-      if (dir === 'left') return [parentRect.x, parentRect.y + baseline];
-      if (dir === 'right')
-        return [parentRect.x + parentRect.width, parentRect.y + baseline];
-      if (dir === 'top-left')
-        return [parentRect.x + parentRect.width * 0.3, parentRect.y];
-      if (dir === 'top-right')
-        return [parentRect.x + parentRect.width * 0.7, parentRect.y];
-      if (dir === 'bottom-left')
-        return [parentRect.x + parentRect.width * 0.3, parentRect.y + baseline];
-      if (dir === 'bottom-right')
-        return [parentRect.x + parentRect.width * 0.7, parentRect.y + baseline];
-
-      const targetOnLeft =
-        (child.state?.rect?.x ?? 0) < (parent.state?.rect?.x ?? 0);
-      return targetOnLeft
-        ? [parentRect.x, parentRect.y + baseline]
-        : [parentRect.x + parentRect.width, parentRect.y + baseline];
     };
 
     const buildLinkPath = (
@@ -1162,9 +1126,12 @@ export class Markmap {
       .attr('data-depth', (d) => d.target.state.depth)
       .attr('data-path', (d) => d.target.state.path)
       .attr('d', (d) => {
-        const parentRect = getCollapseParentRect(d.target);
-        const anchor = getCollapseAnchor(d.source, d.target, parentRect);
-        return linkShape({ source: anchor, target: anchor });
+        const originRect = getOriginSourceRect(d.target);
+        const pathOrigin: [number, number] = [
+          originRect.x + originRect.width,
+          originRect.y + originRect.height,
+        ];
+        return linkShape({ source: pathOrigin, target: pathOrigin });
       })
       .attr('stroke-width', 0);
     const mmPathMerge = mmPathEnter.merge(mmPath);
@@ -1194,7 +1161,7 @@ export class Markmap {
     });
     this.transition(mmGExit)
       .attr('transform', (d) => {
-        const targetRect = getOriginTargetRect(d);
+        const targetRect = getOriginSourceRect(d);
         const targetX = targetRect.x + targetRect.width - d.state.rect.width;
         const targetY = targetRect.y + targetRect.height - d.state.rect.height;
         return `translate(${targetX},${targetY})`;
@@ -1353,23 +1320,13 @@ export class Markmap {
     this.transition(mmFoMerge).style('opacity', 1);
 
     this.transition(mmPathExit)
-      .attrTween('d', function (d) {
-        const parentStartRect =
-          sourceRectMap[d.source.state.id] || getCollapseParentRect(d.target);
-        const anchor = getCollapseAnchor(d.source, d.target, parentStartRect);
-        const currentD = this.getAttribute('d') || '';
-        const pathStart =
-          currentD ||
-          buildLinkPath(
-            d.source,
-            d.target,
-            parentStartRect,
-            sourceRectMap[d.target.state.id],
-          ) ||
-          '';
-        const pathTarget = linkShape({ source: anchor, target: anchor }) || '';
-        const interp = interpolateString(pathStart, pathTarget);
-        return (t) => interp(Math.min(1, Math.max(0, t)));
+      .attr('d', (d) => {
+        const targetRect = getOriginSourceRect(d.target);
+        const pathTarget: [number, number] = [
+          targetRect.x + targetRect.width,
+          targetRect.y + targetRect.height,
+        ];
+        return linkShape({ source: pathTarget, target: pathTarget });
       })
       .attr('stroke-width', 0)
       .remove();
